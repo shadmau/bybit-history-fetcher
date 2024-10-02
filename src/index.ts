@@ -1,5 +1,9 @@
 import axios from 'axios';
 import * as fs from 'fs';
+import dotenv from 'dotenv';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+
+dotenv.config();
 
 enum Category {
     Spot = 'spot',
@@ -23,19 +27,36 @@ enum Interval {
     Week = 'W'
 }
 
+interface ProxyConfig {
+    host: string;
+    port: number;
+    auth?: {
+        username: string;
+        password: string;
+    };
+}
+
 function isValidTimestamp(timestamp: number): boolean {
     if (isNaN(timestamp) || timestamp <= 0) {
         return false;
     }
     if (timestamp < 1_000_000_000) {
-        return false
+        return false;
     }
 
-    return true
+    return true;
 }
+
 const LIMIT = 1000; // Has to be 1, 200 or 1000
 
-async function fetchKlines(symbol: string, interval: Interval, startTimestamp: number, category: Category, outputFile: string = 'klines.json') {
+async function fetchKlines(
+    symbol: string,
+    interval: Interval,
+    startTimestamp: number,
+    category: Category,
+    outputFile: string = 'klines.json',
+    proxy?: ProxyConfig
+) {
 
     if (!isValidTimestamp(startTimestamp)) {
         throw new Error('Invalid start timestamp. It must be a valid timestamp in milliseconds.');
@@ -57,7 +78,18 @@ async function fetchKlines(symbol: string, interval: Interval, startTimestamp: n
         console.log(`Sending request to ${url} with params:`, params);
 
         try {
-            const response = await axios.get(url, { params });
+            const axiosConfig: any = { params };
+
+            if (proxy) {
+                const proxyAuth = proxy.auth ? `${proxy.auth.username}:${proxy.auth.password}@` : '';
+                const proxyProtocol = 'http';
+                const proxyUrl = `${proxyProtocol}://${proxyAuth}${proxy.host}:${proxy.port}`;
+                const agent = new HttpsProxyAgent(proxyUrl);
+                axiosConfig.httpsAgent = agent;
+                axiosConfig.proxy = false;
+            }
+
+            const response = await axios.get(url, axiosConfig);
             console.log(`Received response for ${symbol} at ${new Date().toISOString()}`);
 
             const result = response.data.result;
@@ -65,7 +97,7 @@ async function fetchKlines(symbol: string, interval: Interval, startTimestamp: n
             if (result && result.list && result.list.length > 0) {
                 allKlines.unshift(...handleKlines(result.list, allKlines));
 
-                if (result.list.length + 1  < LIMIT) {
+                if (result.list.length + 1 < LIMIT) {
                     break;
                 }
 
@@ -96,7 +128,7 @@ function handleKlines(newKlines: any[], allKlines: any[]): any[] {
 
 function handleAxiosError(error: any): void {
     if (error.response) {
-        console.error(`API responded with ${error.response.status}: ${error.response.data}`);
+        console.error(`API responded with ${error.response.status}: ${JSON.stringify(error.response.data)}`);
     } else if (error.request) {
         console.error('No response received from API:', error.request);
     } else {
@@ -115,5 +147,18 @@ function writeToFile(data: any[], symbol: string, category: string, outputFile: 
     console.log(`Data written to ${outputFile}. Total results fetched: ${data.length}`);
 }
 
+const proxyHost = process.env.PROXY_HOST;
+const proxyPort = parseInt(process.env.PROXY_PORT || '8080', 10);
+const proxyUser = process.env.PROXY_USER;
+const proxyPassword = process.env.PROXY_PASSWORD;
 
-fetchKlines('BTCUSDT', Interval.OneMinute, 1727292039000, Category.Linear);
+const proxy = proxyHost && proxyUser && proxyPassword ? {
+    host: proxyHost,
+    port: proxyPort,
+    auth: {
+        username: proxyUser,
+        password: proxyPassword
+    }
+} : undefined;
+
+fetchKlines('BTCUSDT', Interval.OneMinute, 1727292039000, Category.Linear, 'klines.json', proxy);
